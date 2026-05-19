@@ -79,6 +79,11 @@ function fromDb(row) {
     quantity: row.quantity == null ? null : Number(row.quantity),
     setup: row.setup,
     notes: row.notes,
+    // v2 analytics fields (nullable, may not exist on old rows)
+    market_type: row.market_type ?? null,
+    rules_followed: row.rules_followed ?? null,
+    rule_breaks: row.rule_breaks ?? null,
+    loss_explanation: row.loss_explanation ?? null,
     createdAt: row.created_at,
   };
 }
@@ -151,6 +156,10 @@ export default function Journal({ user }) {
       quantity: t.quantity,
       setup: t.setup,
       notes: t.notes,
+      market_type: t.market_type,
+      rules_followed: t.rules_followed,
+      rule_breaks: t.rule_breaks,
+      loss_explanation: t.loss_explanation,
     });
     if (error) setStorageErr(`Save failed: ${error.message}`);
     else {
@@ -892,6 +901,15 @@ function TradeForm({ initial, defaultDate, onSubmit, onCancel }) {
   const [quantity, setQuantity] = useState(initial?.quantity ?? '');
   const [setup, setSetup] = useState(initial?.setup || '');
   const [notes, setNotes] = useState(initial?.notes || '');
+  // v2 analytics fields
+  const [marketType, setMarketType] = useState(initial?.market_type || '');
+  const [rulesFollowed, setRulesFollowed] = useState(
+    initial?.rules_followed === true ? 'yes'
+    : initial?.rules_followed === false ? 'no'
+    : ''
+  );
+  const [ruleBreaks, setRuleBreaks] = useState(initial?.rule_breaks || '');
+  const [lossExplanation, setLossExplanation] = useState(initial?.loss_explanation || '');
   const [error, setError] = useState(null);
 
   const symbolRef = useRef(null);
@@ -921,6 +939,11 @@ function TradeForm({ initial, defaultDate, onSubmit, onCancel }) {
       setError('Date is required.');
       return;
     }
+    const isLoss = Number(pnl) < 0;
+    const rulesFollowedBool =
+      rulesFollowed === 'yes' ? true
+      : rulesFollowed === 'no' ? false
+      : null;
     const trade = {
       date,
       symbol: symbol.trim().toUpperCase(),
@@ -931,6 +954,10 @@ function TradeForm({ initial, defaultDate, onSubmit, onCancel }) {
       quantity: quantity === '' ? null : Number(quantity),
       setup: setup.trim() || null,
       notes: notes.trim() || null,
+      market_type: marketType || null,
+      rules_followed: rulesFollowedBool,
+      rule_breaks: rulesFollowedBool === false && ruleBreaks.trim() ? ruleBreaks.trim() : null,
+      loss_explanation: isLoss && lossExplanation.trim() ? lossExplanation.trim() : null,
     };
     onSubmit(trade);
   };
@@ -1064,6 +1091,110 @@ function TradeForm({ initial, defaultDate, onSubmit, onCancel }) {
               className="w-full bg-[#0a0b0f] border border-white/10 rounded-md px-3 py-2 text-sm text-neutral-100 placeholder:text-neutral-700 focus:border-emerald-500/50 focus:outline-none"
             />
           </Field>
+
+          {/* ===== Review section (v2 analytics fields) ===== */}
+          <div className="pt-2 mt-2 border-t border-white/5">
+            <div className="text-[10px] uppercase tracking-[0.18em] text-neutral-500 mb-3">Review</div>
+
+            <Field label="Market type" hint="What was the market doing? Drives the by-market analytics.">
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-1 bg-[#0a0b0f] border border-white/10 rounded-md p-1">
+                {[
+                  { v: 'bull_trend', l: 'Bull trend' },
+                  { v: 'bear_trend', l: 'Bear trend' },
+                  { v: 'range',      l: 'Range' },
+                  { v: 'chop',       l: 'Chop' },
+                  { v: 'news',       l: 'News' },
+                ].map((opt) => (
+                  <button
+                    key={opt.v}
+                    type="button"
+                    onClick={() => setMarketType(marketType === opt.v ? '' : opt.v)}
+                    className={[
+                      'py-1.5 text-[11px] font-medium rounded transition-colors',
+                      marketType === opt.v
+                        ? 'bg-emerald-500/15 text-emerald-400'
+                        : 'text-neutral-500 hover:text-neutral-300',
+                    ].join(' ')}
+                  >
+                    {opt.l}
+                  </button>
+                ))}
+              </div>
+            </Field>
+
+            <div className="mt-4">
+              <Field label="Rules followed?" hint="Did you follow your playbook? Drives the loss audit.">
+                <div className="grid grid-cols-3 gap-1 bg-[#0a0b0f] border border-white/10 rounded-md p-1">
+                  <button
+                    type="button"
+                    onClick={() => setRulesFollowed(rulesFollowed === 'yes' ? '' : 'yes')}
+                    className={[
+                      'py-1.5 text-xs font-semibold rounded transition-colors',
+                      rulesFollowed === 'yes'
+                        ? 'bg-emerald-500/15 text-emerald-400'
+                        : 'text-neutral-500 hover:text-neutral-300',
+                    ].join(' ')}
+                  >
+                    Yes
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRulesFollowed(rulesFollowed === 'no' ? '' : 'no')}
+                    className={[
+                      'py-1.5 text-xs font-semibold rounded transition-colors',
+                      rulesFollowed === 'no'
+                        ? 'bg-rose-500/15 text-rose-400'
+                        : 'text-neutral-500 hover:text-neutral-300',
+                    ].join(' ')}
+                  >
+                    No
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRulesFollowed('')}
+                    className={[
+                      'py-1.5 text-xs font-semibold rounded transition-colors',
+                      rulesFollowed === ''
+                        ? 'bg-white/10 text-neutral-200'
+                        : 'text-neutral-500 hover:text-neutral-300',
+                    ].join(' ')}
+                  >
+                    —
+                  </button>
+                </div>
+              </Field>
+            </div>
+
+            {rulesFollowed === 'no' && (
+              <div className="mt-4">
+                <Field label="Which rules broken?" hint="Be specific. 'Oversized', 'no setup', 'revenge', 'moved stop', etc.">
+                  <textarea
+                    value={ruleBreaks}
+                    onChange={(e) => setRuleBreaks(e.target.value)}
+                    rows={2}
+                    placeholder="What did you actually do wrong?"
+                    className="w-full bg-[#0a0b0f] border border-rose-500/20 rounded-md px-3 py-2 text-sm text-neutral-100 placeholder:text-neutral-700 focus:border-rose-500/50 focus:outline-none resize-none"
+                  />
+                </Field>
+              </div>
+            )}
+
+            {Number(pnl) < 0 && (
+              <div className="mt-4">
+                <Field label="Loss explanation" hint="Why did this trade lose? Was it a valid loss or a mistake?">
+                  <textarea
+                    value={lossExplanation}
+                    onChange={(e) => setLossExplanation(e.target.value)}
+                    rows={2}
+                    placeholder="Stop was hit cleanly / I exited early in fear / setup invalidated / etc."
+                    className="w-full bg-[#0a0b0f] border border-white/10 rounded-md px-3 py-2 text-sm text-neutral-100 placeholder:text-neutral-700 focus:border-emerald-500/50 focus:outline-none resize-none"
+                  />
+                </Field>
+              </div>
+            )}
+          </div>
+          {/* ===== /Review ===== */}
+
 
           <Field label="Notes">
             <textarea

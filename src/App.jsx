@@ -2,10 +2,11 @@
 // Existing v1 journal logic is preserved 1:1 inside Journal.jsx.
 
 import { useEffect, useState } from 'react';
-import { TrendingUp, BookOpen, LogOut, Menu, X } from 'lucide-react';
+import { TrendingUp, BookOpen, BarChart3, LogOut, Menu, X } from 'lucide-react';
 import { supabase } from './lib/supabase';
 import Auth from './components/Auth';
 import Journal from './Journal';
+import Analytics from './Analytics';
 import Course from './Course';
 
 export default function App() {
@@ -46,7 +47,8 @@ function Shell({ user }) {
   const initial = (() => {
     try {
       const v = localStorage.getItem('fj_tab');
-      return v === 'course' ? 'course' : 'journal';
+      if (v === 'course' || v === 'analytics') return v;
+      return 'journal';
     } catch { return 'journal'; }
   })();
   const [tab, setTab] = useState(initial);
@@ -80,6 +82,9 @@ function Shell({ user }) {
           <NavLink active={tab === 'journal'} onClick={() => setTabPersist('journal')} icon={<TrendingUp size={15} />}>
             Journal
           </NavLink>
+          <NavLink active={tab === 'analytics'} onClick={() => setTabPersist('analytics')} icon={<BarChart3 size={15} />}>
+            Analytics
+          </NavLink>
           <NavLink active={tab === 'course'} onClick={() => setTabPersist('course')} icon={<BookOpen size={15} />}>
             Course
           </NavLink>
@@ -98,7 +103,7 @@ function Shell({ user }) {
               <TrendingUp size={14} className="text-emerald-400" />
             </div>
             <div className="text-xs uppercase tracking-[0.18em] text-neutral-400 font-medium">
-              {tab === 'journal' ? 'Journal' : 'Course'}
+              {tab === 'journal' ? 'Journal' : tab === 'analytics' ? 'Analytics' : 'Course'}
             </div>
           </div>
           <button
@@ -111,9 +116,12 @@ function Shell({ user }) {
         </div>
 
         {/* Mobile bottom tab strip — always visible, instant switch */}
-        <div className="grid grid-cols-2 border-t border-white/5">
+        <div className="grid grid-cols-3 border-t border-white/5">
           <MobileTab active={tab === 'journal'} onClick={() => setTabPersist('journal')} icon={<TrendingUp size={14} />}>
             Journal
+          </MobileTab>
+          <MobileTab active={tab === 'analytics'} onClick={() => setTabPersist('analytics')} icon={<BarChart3 size={14} />}>
+            Analytics
           </MobileTab>
           <MobileTab active={tab === 'course'} onClick={() => setTabPersist('course')} icon={<BookOpen size={14} />}>
             Course
@@ -145,6 +153,7 @@ function Shell({ user }) {
       {/* Main content */}
       <main className="md:pl-56 min-h-screen">
         {tab === 'journal' && <Journal user={user} />}
+        {tab === 'analytics' && <Analytics user={user} />}
         {tab === 'course' && <Course user={user} />}
       </main>
     </div>

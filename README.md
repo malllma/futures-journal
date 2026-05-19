@@ -1,19 +1,20 @@
-# Futures Journal + Course (v2)
+# Futures Journal + Analytics + Course (v3)
 
-Personal futures journal with a P/L calendar **plus** a 24-module course on ES futures trading. Single account, syncs across devices. Free to host.
+Personal futures journal with a P/L calendar **plus** a full analytics page **plus** a 24-module course on ES futures trading. Single account, syncs across devices. Free to host.
 
-If you're upgrading from v1, see the **Upgrading from v1** section below — it's a 5-minute job.
+If you're upgrading from v1 or v2, see the **Upgrading** section below — a few minutes.
 
 ---
 
 ## What's in here
 
-- **Journal tab** — P/L calendar, full CRUD on trades, exactly the same as v1.
+- **Journal tab** — P/L calendar, full CRUD on trades. Same as v1, with new fields per trade: market type, rules-followed, rule-break explanation, loss explanation.
+- **Analytics tab** — win rate, expectancy, profit factor, performance by market type and setup, honest statistical edge analysis (with 30-trade minimum before declaring anything), loss audit (valid losses vs money lost to discipline failures), daily notes, and CSV export.
 - **Course tab** — 24 modules across 6 phases (Foundations → Charts → Risk → Order Flow → Strategy → Psychology & Prop Eval), with checklists, end-of-module quizzes, SVG diagrams, a live position sizing calculator, and a graduation checklist.
 - **Auth** via Supabase email + password.
-- **Sync** via Supabase realtime — your progress, checks, and trades stay current across phone and PC.
+- **Sync** via Supabase realtime — your progress, checks, trades, and notes stay current across phone and PC.
 
-The journal table from v1 (`trades`) is **not touched** by the v2 install. Only two new tables (`course_progress`, `course_checklist`) are added.
+The journal table from v1 (`trades`) is preserved — v3 only **adds** nullable columns to it. Old trades show "Unclassified" in the new analytics groupings. Three new tables added across v2 and v3: `course_progress`, `course_checklist`, `daily_notes`.
 
 ---
 
@@ -27,19 +28,22 @@ futures-journal-v2/
 ├── index.html
 ├── package.json
 ├── postcss.config.js
-├── supabase-course-setup.sql       ← run this once in Supabase
+├── supabase-course-setup.sql       ← v2 migration: course tables
+├── supabase-analytics-setup.sql    ← v3 migration: analytics fields + daily_notes
 ├── tailwind.config.js
 ├── vite.config.js
 └── src/
-    ├── App.jsx                      ← shell (auth + sidebar nav)
-    ├── Journal.jsx                  ← original journal logic
+    ├── App.jsx                      ← shell (auth + sidebar nav with 3 tabs)
+    ├── Journal.jsx                  ← journal + extended trade form
+    ├── Analytics.jsx                ← analytics page (v3, new)
     ├── Course.jsx                   ← course shell
     ├── index.css
     ├── main.jsx
     ├── components/
     │   └── Auth.jsx
     ├── lib/
-    │   └── supabase.js
+    │   ├── supabase.js
+    │   └── analytics.js             ← pure analytics math (v3, new)
     └── course/
         ├── index.js                 ← phases, allModules, graduationChecklist
         ├── useCourseData.js         ← Supabase-synced progress + checklist hook
@@ -60,7 +64,19 @@ futures-journal-v2/
 
 ---
 
-## Upgrading from v1 (most likely you)
+## Upgrading
+
+### From v2 to v3 (you've already got the course working)
+
+Just **one** new thing: run the analytics SQL migration.
+
+In Supabase → **SQL Editor** → **New query** → paste the entire contents of `supabase-analytics-setup.sql` → **Run**.
+
+This adds four nullable columns to your existing `trades` table (`market_type`, `rules_followed`, `rule_breaks`, `loss_explanation`) and creates a new `daily_notes` table. Old trades are not modified — they'll just show "Unclassified" in the analytics groupings until you backfill them via the journal.
+
+Then push the new v3 code to GitHub (same upload process you've already done). Vercel auto-redeploys.
+
+### From v1 to v3 (full upgrade)
 
 You already have:
 - the v1 repo on GitHub (`malllma/futures-journal`)
@@ -69,20 +85,22 @@ You already have:
 
 You need to do **two** things:
 
-### 1. Run the course-tables SQL once
+### 1. Run BOTH SQL migrations once
 
 In Supabase dashboard → **SQL Editor** → **New query** → paste the entire contents of `supabase-course-setup.sql` → click **Run**.
 
-You should see "Success. No rows returned." This adds two tables (`course_progress`, `course_checklist`), enables row-level security, and turns on realtime. **Your `trades` table is untouched.**
+Then **New query** again → paste `supabase-analytics-setup.sql` → **Run**.
 
-### 2. Push the v2 code to GitHub
+Order matters slightly but both are safe to re-run. Together they add three tables (`course_progress`, `course_checklist`, `daily_notes`) and four nullable columns to `trades`. **No data is destroyed.**
+
+### 2. Push the v3 code to GitHub
 
 You can either:
 
 **Option A — replace everything via GitHub web UI** (easiest):
 
 1. Go to your repo on github.com.
-2. For each top-level file (`package.json`, `index.html`, etc.) that exists in v2, click into it on GitHub, click the pencil icon, replace the contents, commit. (Most files are unchanged from v1, so you only really need to update files that are different.)
+2. For each top-level file (`package.json`, `index.html`, etc.) that exists in v3, click into it on GitHub, click the pencil icon, replace the contents, commit. (Most files are unchanged from v1, so you only really need to update files that are different.)
 3. **Or simpler:** delete the existing `src/` folder on GitHub (open it, delete each file individually — GitHub web UI has no folder delete, but you can do it from the file view via the trash icon). Then upload the new `src/` contents.
 
 **Option B — clean re-upload** (cleanest):
@@ -99,8 +117,9 @@ Vercel auto-deploys when you commit. Wait ~2 min for the build.
 
 Same URL as before. You'll see:
 
-- A sidebar (desktop) or top tabs (mobile) with **Journal** and **Course**.
-- Journal works exactly as before, with all your trades intact.
+- A sidebar (desktop) or top tabs (mobile) with **Journal**, **Analytics**, and **Course**.
+- Journal works exactly as before, with all your trades intact. The trade form now has a "Review" section at the bottom (market type, rules followed, etc.).
+- Analytics shows your full P/L metrics. Until you have 30+ trades, the edge analysis honestly tells you "insufficient data".
 - Course is fresh — no progress, no checks. Start at module 01.
 
 ---

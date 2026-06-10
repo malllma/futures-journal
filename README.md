@@ -1,20 +1,37 @@
-# Futures Journal + Analytics + Course (v3)
+# Futures Journal + Analytics + Edge/Playbook (v4)
 
-Personal futures journal with a P/L calendar **plus** a full analytics page **plus** a 24-module course on ES futures trading. Single account, syncs across devices. Free to host.
+Personal futures journal with a P/L calendar **plus** a trading-improvement analytics system **plus** an Edge/Playbook page. Single account, syncs across devices. Free to host.
 
-If you're upgrading from v1 or v2, see the **Upgrading** section below — a few minutes.
+If you're upgrading from an earlier version, see **Upgrading to v4** directly below.
 
 ---
 
-## What's in here
+## ⚡ Upgrading to v4 (the edge upgrade)
 
-- **Journal tab** — P/L calendar, full CRUD on trades. Same as v1, with new fields per trade: market type, rules-followed, rule-break explanation, loss explanation.
-- **Analytics tab** — win rate, expectancy, profit factor, performance by market type and setup, honest statistical edge analysis (with 30-trade minimum before declaring anything), loss audit (valid losses vs money lost to discipline failures), daily notes, and CSV export.
-- **Course tab** — 24 modules across 6 phases (Foundations → Charts → Risk → Order Flow → Strategy → Psychology & Prop Eval), with checklists, end-of-module quizzes, SVG diagrams, a live position sizing calculator, and a graduation checklist.
-- **Auth** via Supabase email + password.
-- **Sync** via Supabase realtime — your progress, checks, trades, and notes stay current across phone and PC.
+**One thing to do: run the new migration.** In Supabase → **SQL Editor** → **New query** → paste the entire contents of [`supabase-edge-upgrade.sql`](supabase-edge-upgrade.sql) → **Run**.
 
-The journal table from v1 (`trades`) is preserved — v3 only **adds** nullable columns to it. Old trades show "Unclassified" in the new analytics groupings. Three new tables added across v2 and v3: `course_progress`, `course_checklist`, `daily_notes`.
+It is **100% additive and reversible**: it only *adds* nullable columns to `trades` (`setup_family`, `entry_trigger`, `setup_present`, `trigger_present`, `execution_quality`, `mistake_type`, `stop_loss`, `take_profit`, `is_eval`), *expands* (does not replace) the `market_type` CHECK to allow `reversal`/`breakout`/`slow`, and *creates* one new table (`no_trades`). **No existing trade, note, or P/L value is touched.** Run it once, then push the new code. Old trades keep working immediately and are auto-classified at read-time from their existing setup text. A commented rollback block is at the bottom of the SQL file.
+
+> The **Settings** page shows whether the migration is live. Run the SQL *before* logging new trades with the new fields.
+
+## What's new in v4
+
+- **Graded edge analysis** — counts **every** logged trade (fixes the old "needs 30 trades" gate) and grades it honestly: *Too early → Promising but unproven → Statistically stronger → No edge detected*, each in plain language, with the full stat block (win rate, expectancy, profit factor, valid-trade expectancy, invalid-trade cost, best/worst setup & market).
+- **Setup family vs entry trigger** — separated. Standardized setup families (Support & Resistance, VWAP, Trendline, Confluence, No-setup) mapped non-destructively from your old free-text labels, plus a separate Entry Trigger field.
+- **Richer trade form** — stop/take-profit, setup present?, trigger present?, valid/invalid, execution quality, mistake type, eval toggle, and a "Suggest labels from notes" button (keyword-based, suggestion only).
+- **Reorganized Analytics** — overview, edge confidence, setup / entry-trigger / setup+trigger-combo / market-type performance (news days highlighted), mistake-cost ranking, valid-vs-invalid audit, a **weekly coach summary** (replaces clicking each day), discipline tracker, and export.
+- **Filters** — recompute every section: valid/invalid only, by setup family, exclude/only news, trend/chop days, last 20/30, eval only.
+- **Edge / Playbook page** (replaces the Course tab) — your current edge, best/worst setups & markets, costliest mistakes, weekly coach, and a **playbook card** for each setup family driven by your real stats and example notes.
+- **Export** — *Download Edge Report* (compact Markdown for ChatGPT) + *Export CSV* (raw trades, backward-compatible columns).
+
+## Tabs
+
+- **Journal** — P/L calendar, full CRUD, the extended trade form, and a no-trade (discipline) logger per day.
+- **Analytics** — the full trading-improvement dashboard described above.
+- **Edge / Playbook** — current edge summary + per-setup playbook cards + export.
+- **Settings** — account, export, and migration status.
+
+**Data safety:** the `trades` table is preserved — v4 only **adds** nullable columns. Old trades show "Unclassified" until you edit them, and are auto-classified at read-time from their raw setup text in the meantime. The Course UI was removed, but its data tables (`course_progress`, `course_checklist`) are left intact in your database.
 
 ---
 
@@ -28,39 +45,34 @@ futures-journal-v2/
 ├── index.html
 ├── package.json
 ├── postcss.config.js
-├── supabase-course-setup.sql       ← v2 migration: course tables
+├── supabase-course-setup.sql       ← v2 migration: course tables (still valid; tables kept)
 ├── supabase-analytics-setup.sql    ← v3 migration: analytics fields + daily_notes
+├── supabase-edge-upgrade.sql       ← v4 migration: edge fields + no_trades (RUN THIS)
 ├── tailwind.config.js
 ├── vite.config.js
+├── scripts/
+│   └── selftest.mjs                ← node logic self-test (run: node scripts/selftest.mjs [trades.csv])
 └── src/
-    ├── App.jsx                      ← shell (auth + sidebar nav with 3 tabs)
-    ├── Journal.jsx                  ← journal + extended trade form
-    ├── Analytics.jsx                ← analytics page (v3, new)
-    ├── Course.jsx                   ← course shell
+    ├── App.jsx                      ← shell (auth + sidebar nav: Journal / Analytics / Edge / Settings)
+    ├── Journal.jsx                  ← journal + extended trade form + no-trade tracker
+    ├── Analytics.jsx                ← analytics dashboard (v4, reorganized + filters)
+    ├── EdgePlaybook.jsx             ← Edge / Playbook page (v4, replaces Course)
+    ├── Settings.jsx                 ← account + export + migration status (v4)
     ├── index.css
     ├── main.jsx
     ├── components/
-    │   └── Auth.jsx
-    ├── lib/
-    │   ├── supabase.js
-    │   └── analytics.js             ← pure analytics math (v3, new)
-    └── course/
-        ├── index.js                 ← phases, allModules, graduationChecklist
-        ├── useCourseData.js         ← Supabase-synced progress + checklist hook
-        ├── components/
-        │   ├── Checklist.jsx
-        │   ├── Diagrams.jsx
-        │   ├── LessonBody.jsx
-        │   ├── PositionCalculator.jsx
-        │   └── Quiz.jsx
-        └── modules/
-            ├── phase1.js  (Foundations: m01–m04)
-            ├── phase2.js  (Charts & Price Action: m05–m09)
-            ├── phase3.js  (Risk & Position Sizing: m10–m13)
-            ├── phase4.js  (Order Flow & Market Structure: m14–m17)
-            ├── phase5.js  (Strategy & Playbook: m18–m21)
-            └── phase6.js  (Psychology & Prop Eval: m22–m24)
+    │   ├── Auth.jsx
+    │   └── ExportButtons.jsx        ← shared Markdown report + CSV export (v4)
+    └── lib/
+        ├── supabase.js
+        ├── analytics.js             ← pure analytics math: graded edge, groups, audits, weekly (v4)
+        ├── classification.js        ← setup/trigger/market vocab + old→new keyword mapping (v4)
+        ├── report.js                ← Markdown edge report + CSV builder (v4)
+        ├── useJournalData.js        ← shared Supabase loader (trades + notes + no_trades) (v4)
+        └── download.js              ← browser download helper (v4)
 ```
+
+> The old `src/course/` directory and `Course.jsx` were removed in v4. The course **data tables** (`course_progress`, `course_checklist`) are intentionally left in your Supabase database, so no progress is lost if you ever re-add it.
 
 ---
 

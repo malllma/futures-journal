@@ -10,8 +10,14 @@ import {
   TrendingDown,
   Calendar as CalIcon,
   LogOut,
+  Sparkles,
+  Ban,
 } from 'lucide-react';
 import { supabase } from './lib/supabase';
+import {
+  SETUP_FAMILIES, ENTRY_TRIGGERS, MARKET_TYPES, EXECUTION_QUALITY, MISTAKE_TYPES,
+  NO_TRADE_REASONS, resolveSetupFamily, setupFamilyLabel, suggestLabelsFromNotes,
+} from './lib/classification';
 
 // ----- date helpers -----
 const pad = (n) => String(n).padStart(2, '0');
@@ -84,6 +90,16 @@ function fromDb(row) {
     rules_followed: row.rules_followed ?? null,
     rule_breaks: row.rule_breaks ?? null,
     loss_explanation: row.loss_explanation ?? null,
+    // edge-upgrade fields (nullable; absent on old rows → null, classified at read-time)
+    setup_family: row.setup_family ?? null,
+    entry_trigger: row.entry_trigger ?? null,
+    setup_present: row.setup_present ?? null,
+    trigger_present: row.trigger_present ?? null,
+    execution_quality: row.execution_quality ?? null,
+    mistake_type: row.mistake_type ?? null,
+    stop_loss: row.stop_loss == null ? null : Number(row.stop_loss),
+    take_profit: row.take_profit == null ? null : Number(row.take_profit),
+    is_eval: row.is_eval ?? null,
     createdAt: row.created_at,
   };
 }
@@ -92,6 +108,7 @@ function fromDb(row) {
 // Journal page — embedded inside App sidebar layout
 export default function Journal({ user }) {
   const [trades, setTrades] = useState([]);
+  const [noTrades, setNoTrades] = useState([]); // discipline log — kept fully separate from P/L
   const [loaded, setLoaded] = useState(false);
   const [storageErr, setStorageErr] = useState(null);
 
@@ -118,10 +135,24 @@ export default function Journal({ user }) {
     setStorageErr(null);
   };
 
+  // no_trades table is optional — degrade gracefully if the migration hasn't been run.
+  const loadNoTrades = async () => {
+    const { data, error } = await supabase
+      .from('no_trades')
+      .select('*')
+      .order('date', { ascending: false });
+    if (error) {
+      // table missing (migration not yet run) — don't surface as a hard error
+      setNoTrades([]);
+      return;
+    }
+    setNoTrades(data || []);
+  };
+
   useEffect(() => {
     let mounted = true;
     (async () => {
-      await loadTrades();
+      await Promise.all([loadTrades(), loadNoTrades()]);
       if (mounted) setLoaded(true);
     })();
 
@@ -130,9 +161,12 @@ export default function Journal({ user }) {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'trades' },
-        () => {
-          loadTrades();
-        }
+        () => { loadTrades(); }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'no_trades' },
+        () => { loadNoTrades(); }
       )
       .subscribe();
 
@@ -160,6 +194,16 @@ export default function Journal({ user }) {
       rules_followed: t.rules_followed,
       rule_breaks: t.rule_breaks,
       loss_explanation: t.loss_explanation,
+      // edge-upgrade fields
+      setup_family: t.setup_family,
+      entry_trigger: t.entry_trigger,
+      setup_present: t.setup_present,
+      trigger_present: t.trigger_present,
+      execution_quality: t.execution_quality,
+      mistake_type: t.mistake_type,
+      stop_loss: t.stop_loss,
+      take_profit: t.take_profit,
+      is_eval: t.is_eval,
     });
     if (error) setStorageErr(`Save failed: ${error.message}`);
     else {
@@ -191,6 +235,21 @@ export default function Journal({ user }) {
     }
   };
 
+  // --- no-trade (discipline) CRUD — never affects P/L ---
+  const addNoTrade = async (date, reason, note) => {
+    const { error } = await supabase.from('no_trades').insert({
+      user_id: user.id, date, reason: reason || null, note: note || null,
+    });
+    if (error) setStorageErr(`Could not log no-trade: ${error.message}`);
+    else { setStorageErr(null); await loadNoTrades(); }
+  };
+
+  const deleteNoTrade = async (id) => {
+    const { error } = await supabase.from('no_trades').delete().eq('id', id);
+    if (error) setStorageErr(`Delete failed: ${error.message}`);
+    else { setStorageErr(null); await loadNoTrades(); }
+  };
+
   // --- derived ---
   const byDate = useMemo(() => {
     const m = new Map();
@@ -200,6 +259,15 @@ export default function Journal({ user }) {
     }
     return m;
   }, [trades]);
+
+  const noTradesByDate = useMemo(() => {
+    const m = new Map();
+    for (const nt of noTrades) {
+      if (!m.has(nt.date)) m.set(nt.date, []);
+      m.get(nt.date).push(nt);
+    }
+    return m;
+  }, [noTrades]);
 
   const grid = useMemo(
     () => buildMonthGrid(cursor.getFullYear(), cursor.getMonth()),
@@ -283,6 +351,7 @@ export default function Journal({ user }) {
   const selectedTrades = selectedDate ? byDate.get(selectedDate) || [] : [];
   const selectedPnl = selectedTrades.reduce((s, t) => s + (Number(t.pnl) || 0), 0);
   const selectedWins = selectedTrades.filter((t) => Number(t.pnl) > 0).length;
+  const selectedNoTrades = selectedDate ? noTradesByDate.get(selectedDate) || [] : [];
 
   if (!loaded) {
     return (
@@ -398,6 +467,7 @@ export default function Journal({ user }) {
         <Calendar
           grid={grid}
           byDate={byDate}
+          noTradesByDate={noTradesByDate}
           weeklyTotals={weeklyTotals}
           monthIdx={cursor.getMonth()}
           onSelectDay={openDay}
@@ -425,12 +495,15 @@ export default function Journal({ user }) {
         <DayDrawer
           dateKey={selectedDate}
           trades={selectedTrades}
+          noTrades={selectedNoTrades}
           totalPnl={selectedPnl}
           wins={selectedWins}
           onClose={closeDay}
           onAdd={() => openAdd(selectedDate)}
           onEdit={openEdit}
           onDelete={requestDelete}
+          onAddNoTrade={(reason, note) => addNoTrade(selectedDate, reason, note)}
+          onDeleteNoTrade={deleteNoTrade}
         />
       )}
 
@@ -493,7 +566,7 @@ function UserMenu({ email }) {
 }
 
 // ===== Calendar =====
-function Calendar({ grid, byDate, weeklyTotals, monthIdx, onSelectDay }) {
+function Calendar({ grid, byDate, noTradesByDate, weeklyTotals, monthIdx, onSelectDay }) {
   const dayNames = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
   return (
     <div className="rounded-lg border border-white/5 overflow-hidden bg-[#0d0e13]">
@@ -544,6 +617,7 @@ function Calendar({ grid, byDate, weeklyTotals, monthIdx, onSelectDay }) {
                   (s, t) => s + (Number(t.pnl) || 0),
                   0
                 );
+                const hasNoTrade = ((noTradesByDate && noTradesByDate.get(cell.key)) || []).length > 0;
                 return (
                   <DayCell
                     key={cell.key}
@@ -551,6 +625,7 @@ function Calendar({ grid, byDate, weeklyTotals, monthIdx, onSelectDay }) {
                     monthIdx={monthIdx}
                     pnl={dayPnl}
                     count={dayTrades.length}
+                    hasNoTrade={hasNoTrade}
                     onClick={() => onSelectDay(cell.key)}
                   />
                 );
@@ -580,7 +655,7 @@ function cellTone(pnl, count) {
   return { bg: 'bg-white/[0.02]', text: 'text-neutral-400', amount: 'text-neutral-400' };
 }
 
-function DayCell({ cell, monthIdx, pnl, count, onClick }) {
+function DayCell({ cell, monthIdx, pnl, count, hasNoTrade, onClick }) {
   const inMonth = cell.date.getMonth() === monthIdx;
   const isToday = ymd(cell.date) === todayYMD();
   const tone = cellTone(pnl, count);
@@ -621,6 +696,10 @@ function DayCell({ cell, monthIdx, pnl, count, onClick }) {
           <div className="text-[9px] sm:text-[10px] text-neutral-500 mt-0.5">
             {count} {count === 1 ? 'trade' : 'trades'}
           </div>
+        </div>
+      ) : hasNoTrade ? (
+        <div className="mt-2 sm:mt-3 inline-flex items-center gap-1 text-[9px] sm:text-[10px] text-sky-400/80">
+          <Ban size={10} /> No-trade
         </div>
       ) : (
         <div className="mt-2 sm:mt-3 text-[10px] text-neutral-700 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -711,12 +790,15 @@ function SaturdayCell({
 function DayDrawer({
   dateKey,
   trades,
+  noTrades = [],
   totalPnl,
   wins,
   onClose,
   onAdd,
   onEdit,
   onDelete,
+  onAddNoTrade,
+  onDeleteNoTrade,
 }) {
   const losses = trades.filter((t) => Number(t.pnl) < 0).length;
   const winRate = trades.length ? Math.round((wins / trades.length) * 100) : 0;
@@ -789,7 +871,12 @@ function DayDrawer({
           )}
         </div>
 
-        <div className="p-3 sm:p-4 border-t border-white/5 bg-[#0d0e13]">
+        <div className="p-3 sm:p-4 border-t border-white/5 bg-[#0d0e13] space-y-3">
+          <NoTradeSection
+            noTrades={noTrades}
+            onAdd={onAddNoTrade}
+            onDelete={onDeleteNoTrade}
+          />
           <button
             onClick={onAdd}
             className="w-full inline-flex items-center justify-center gap-1.5 py-2.5 rounded-md bg-emerald-500 text-black font-medium text-sm hover:bg-emerald-400"
@@ -798,6 +885,85 @@ function DayDrawer({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// No-trade discipline tracker — logs days you correctly stayed out. Separate from P/L.
+function NoTradeSection({ noTrades, onAdd, onDelete }) {
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState('');
+  const [note, setNote] = useState('');
+
+  const submit = async () => {
+    if (!onAdd) return;
+    await onAdd(reason || null, note.trim() || null);
+    setReason(''); setNote(''); setOpen(false);
+  };
+
+  return (
+    <div className="rounded-md border border-sky-500/20 bg-sky-500/[0.04]">
+      {noTrades.length > 0 && (
+        <ul className="divide-y divide-white/5">
+          {noTrades.map((nt) => (
+            <li key={nt.id} className="flex items-center justify-between gap-2 px-3 py-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <Ban size={12} className="text-sky-400 shrink-0" />
+                <span className="text-xs text-sky-300">
+                  {(NO_TRADE_REASONS.find((r) => r.value === nt.reason) || {}).label || nt.reason || 'No-trade'}
+                </span>
+                {nt.note && <span className="text-[11px] text-neutral-500 truncate">· {nt.note}</span>}
+              </div>
+              {onDelete && (
+                <button
+                  onClick={() => onDelete(nt.id)}
+                  className="p-1 rounded hover:bg-white/5 text-neutral-500 hover:text-rose-400 shrink-0"
+                  aria-label="Remove no-trade"
+                >
+                  <Trash2 size={12} />
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {open ? (
+        <div className="p-3 space-y-2">
+          <select
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            className="w-full bg-[#0a0b0f] border border-white/10 rounded-md px-3 py-2 text-sm text-neutral-100 focus:border-sky-500/50 focus:outline-none"
+          >
+            <option value="">Why did you stay out?</option>
+            {NO_TRADE_REASONS.map((r) => (
+              <option key={r.value} value={r.value}>{r.label}</option>
+            ))}
+          </select>
+          <input
+            type="text"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="Optional note"
+            className="w-full bg-[#0a0b0f] border border-white/10 rounded-md px-3 py-2 text-sm text-neutral-100 placeholder:text-neutral-600 focus:border-sky-500/50 focus:outline-none"
+          />
+          <div className="flex gap-2">
+            <button onClick={() => setOpen(false)} className="flex-1 py-2 rounded-md border border-white/10 text-xs text-neutral-300 hover:bg-white/5">
+              Cancel
+            </button>
+            <button onClick={submit} className="flex-1 py-2 rounded-md bg-sky-500 text-black text-xs font-medium hover:bg-sky-400">
+              Log no-trade
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          onClick={() => setOpen(true)}
+          className="w-full inline-flex items-center justify-center gap-1.5 py-2 text-xs text-sky-300 hover:bg-sky-500/[0.06] rounded-md"
+        >
+          <Ban size={13} /> Log a no-trade day (discipline)
+        </button>
+      )}
     </div>
   );
 }
@@ -836,6 +1002,11 @@ function TradeRow({ trade, onEdit, onDelete }) {
               {isLong ? <TrendingUp size={10} /> : <TrendingDown size={10} />}
               {isLong ? 'LONG' : 'SHORT'}
             </span>
+            {resolveSetupFamily(trade) && (
+              <span className="text-[10px] uppercase tracking-wider text-emerald-300/80 px-1.5 py-0.5 rounded border border-emerald-500/20 bg-emerald-500/[0.06]">
+                {setupFamilyLabel(resolveSetupFamily(trade))}
+              </span>
+            )}
             {trade.setup && (
               <span className="text-[10px] uppercase tracking-wider text-neutral-500 px-1.5 py-0.5 rounded border border-white/10">
                 {trade.setup}
@@ -899,6 +1070,8 @@ function TradeForm({ initial, defaultDate, onSubmit, onCancel }) {
   const [entry, setEntry] = useState(initial?.entry ?? '');
   const [exitVal, setExitVal] = useState(initial?.exit ?? '');
   const [quantity, setQuantity] = useState(initial?.quantity ?? '');
+  const [stopLoss, setStopLoss] = useState(initial?.stop_loss ?? '');
+  const [takeProfit, setTakeProfit] = useState(initial?.take_profit ?? '');
   const [setup, setSetup] = useState(initial?.setup || '');
   const [notes, setNotes] = useState(initial?.notes || '');
   // v2 analytics fields
@@ -910,7 +1083,36 @@ function TradeForm({ initial, defaultDate, onSubmit, onCancel }) {
   );
   const [ruleBreaks, setRuleBreaks] = useState(initial?.rule_breaks || '');
   const [lossExplanation, setLossExplanation] = useState(initial?.loss_explanation || '');
+  // edge-upgrade fields
+  const [setupFamily, setSetupFamily] = useState(initial?.setup_family || '');
+  const [entryTrigger, setEntryTrigger] = useState(initial?.entry_trigger || '');
+  const [setupPresent, setSetupPresent] = useState(
+    initial?.setup_present === true ? 'yes' : initial?.setup_present === false ? 'no' : ''
+  );
+  const [triggerPresent, setTriggerPresent] = useState(
+    initial?.trigger_present === true ? 'yes' : initial?.trigger_present === false ? 'no' : ''
+  );
+  const [executionQuality, setExecutionQuality] = useState(initial?.execution_quality || '');
+  const [mistakeType, setMistakeType] = useState(initial?.mistake_type || '');
+  const [isEval, setIsEval] = useState(initial?.is_eval === true);
+  const [suggestMsg, setSuggestMsg] = useState(null);
   const [error, setError] = useState(null);
+
+  // #19 — suggest labels from notes/setup text. Fills ONLY empty fields; never overwrites.
+  const applySuggestions = () => {
+    const s = suggestLabelsFromNotes(notes, setup);
+    const applied = [];
+    if (s.setup_family && !setupFamily) { setSetupFamily(s.setup_family); applied.push('setup family'); }
+    if (s.entry_trigger && !entryTrigger) { setEntryTrigger(s.entry_trigger); applied.push('entry trigger'); }
+    if (s.market_type && !marketType) { setMarketType(s.market_type); applied.push('market type'); }
+    if (s.mistake_type && !mistakeType) { setMistakeType(s.mistake_type); applied.push('mistake'); }
+    if (s.rules_followed === false && rulesFollowed === '') { setRulesFollowed('no'); applied.push('rules: invalid'); }
+    setSuggestMsg(
+      applied.length
+        ? `Suggested ${applied.join(', ')} from your notes. Edit anything that's off.`
+        : 'No new suggestions found — your fields are already set or notes are too sparse.'
+    );
+  };
 
   const symbolRef = useRef(null);
   useEffect(() => {
@@ -940,10 +1142,8 @@ function TradeForm({ initial, defaultDate, onSubmit, onCancel }) {
       return;
     }
     const isLoss = Number(pnl) < 0;
-    const rulesFollowedBool =
-      rulesFollowed === 'yes' ? true
-      : rulesFollowed === 'no' ? false
-      : null;
+    const tri = (v) => (v === 'yes' ? true : v === 'no' ? false : null);
+    const rulesFollowedBool = tri(rulesFollowed);
     const trade = {
       date,
       symbol: symbol.trim().toUpperCase(),
@@ -952,12 +1152,22 @@ function TradeForm({ initial, defaultDate, onSubmit, onCancel }) {
       entry: entry === '' ? null : Number(entry),
       exit: exitVal === '' ? null : Number(exitVal),
       quantity: quantity === '' ? null : Number(quantity),
+      stop_loss: stopLoss === '' ? null : Number(stopLoss),
+      take_profit: takeProfit === '' ? null : Number(takeProfit),
       setup: setup.trim() || null,
       notes: notes.trim() || null,
       market_type: marketType || null,
       rules_followed: rulesFollowedBool,
       rule_breaks: rulesFollowedBool === false && ruleBreaks.trim() ? ruleBreaks.trim() : null,
       loss_explanation: isLoss && lossExplanation.trim() ? lossExplanation.trim() : null,
+      // edge-upgrade fields
+      setup_family: setupFamily || null,
+      entry_trigger: entryTrigger || null,
+      setup_present: tri(setupPresent),
+      trigger_present: tri(triggerPresent),
+      execution_quality: executionQuality || null,
+      mistake_type: mistakeType || null,
+      is_eval: isEval ? true : null,
     };
     onSubmit(trade);
   };
@@ -1082,121 +1292,127 @@ function TradeForm({ initial, defaultDate, onSubmit, onCancel }) {
             </Field>
           </div>
 
-          <Field label="Setup / Tag" hint="Optional — e.g. breakout, VWAP reclaim, opening drive.">
-            <input
-              type="text"
-              value={setup}
-              onChange={(e) => setSetup(e.target.value)}
-              placeholder="—"
-              className="w-full bg-[#0a0b0f] border border-white/10 rounded-md px-3 py-2 text-sm text-neutral-100 placeholder:text-neutral-700 focus:border-emerald-500/50 focus:outline-none"
-            />
-          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Stop loss" hint="Planned stop price.">
+              <input
+                type="number" inputMode="decimal" step="any"
+                value={stopLoss}
+                onChange={(e) => setStopLoss(e.target.value)}
+                placeholder="—"
+                className="w-full bg-[#0a0b0f] border border-white/10 rounded-md px-2.5 py-2 text-sm font-mono tabular-nums text-neutral-100 placeholder:text-neutral-700 focus:border-emerald-500/50 focus:outline-none"
+              />
+            </Field>
+            <Field label="Take profit" hint="Planned target price.">
+              <input
+                type="number" inputMode="decimal" step="any"
+                value={takeProfit}
+                onChange={(e) => setTakeProfit(e.target.value)}
+                placeholder="—"
+                className="w-full bg-[#0a0b0f] border border-white/10 rounded-md px-2.5 py-2 text-sm font-mono tabular-nums text-neutral-100 placeholder:text-neutral-700 focus:border-emerald-500/50 focus:outline-none"
+              />
+            </Field>
+          </div>
 
-          {/* ===== Review section (v2 analytics fields) ===== */}
-          <div className="pt-2 mt-2 border-t border-white/5">
-            <div className="text-[10px] uppercase tracking-[0.18em] text-neutral-500 mb-3">Review</div>
+          {/* ===== Classification (setup family is separate from entry trigger) ===== */}
+          <div className="pt-2 mt-2 border-t border-white/5 space-y-4">
+            <div className="text-[10px] uppercase tracking-[0.18em] text-neutral-500">Classification</div>
 
-            <Field label="Market type" hint="What was the market doing? Drives the by-market analytics.">
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-1 bg-[#0a0b0f] border border-white/10 rounded-md p-1">
-                {[
-                  { v: 'bull_trend', l: 'Bull trend' },
-                  { v: 'bear_trend', l: 'Bear trend' },
-                  { v: 'range',      l: 'Range' },
-                  { v: 'chop',       l: 'Chop' },
-                  { v: 'news',       l: 'News' },
-                ].map((opt) => (
-                  <button
-                    key={opt.v}
-                    type="button"
-                    onClick={() => setMarketType(marketType === opt.v ? '' : opt.v)}
-                    className={[
-                      'py-1.5 text-[11px] font-medium rounded transition-colors',
-                      marketType === opt.v
-                        ? 'bg-emerald-500/15 text-emerald-400'
-                        : 'text-neutral-500 hover:text-neutral-300',
-                    ].join(' ')}
-                  >
-                    {opt.l}
-                  </button>
-                ))}
-              </div>
+            <Field label="Setup family" hint="Where the trade idea came from. Drives the by-setup analytics (#5).">
+              <Select value={setupFamily} onChange={setSetupFamily} options={SETUP_FAMILIES} placeholder="Select a setup family" />
             </Field>
 
-            <div className="mt-4">
-              <Field label="Rules followed?" hint="Did you follow your playbook? Drives the loss audit.">
-                <div className="grid grid-cols-3 gap-1 bg-[#0a0b0f] border border-white/10 rounded-md p-1">
-                  <button
-                    type="button"
-                    onClick={() => setRulesFollowed(rulesFollowed === 'yes' ? '' : 'yes')}
-                    className={[
-                      'py-1.5 text-xs font-semibold rounded transition-colors',
-                      rulesFollowed === 'yes'
-                        ? 'bg-emerald-500/15 text-emerald-400'
-                        : 'text-neutral-500 hover:text-neutral-300',
-                    ].join(' ')}
-                  >
-                    Yes
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setRulesFollowed(rulesFollowed === 'no' ? '' : 'no')}
-                    className={[
-                      'py-1.5 text-xs font-semibold rounded transition-colors',
-                      rulesFollowed === 'no'
-                        ? 'bg-rose-500/15 text-rose-400'
-                        : 'text-neutral-500 hover:text-neutral-300',
-                    ].join(' ')}
-                  >
-                    No
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setRulesFollowed('')}
-                    className={[
-                      'py-1.5 text-xs font-semibold rounded transition-colors',
-                      rulesFollowed === ''
-                        ? 'bg-white/10 text-neutral-200'
-                        : 'text-neutral-500 hover:text-neutral-300',
-                    ].join(' ')}
-                  >
-                    —
-                  </button>
-                </div>
+            <Field label="Entry trigger" hint="Why you entered at that exact moment — separate from the setup (#6).">
+              <Select value={entryTrigger} onChange={setEntryTrigger} options={ENTRY_TRIGGERS} placeholder="Select an entry trigger" />
+            </Field>
+
+            <Field label="Raw setup note (legacy)" hint="Your original free-text label, kept as-is. When the setup family above is blank, it's derived from this.">
+              <input
+                type="text"
+                value={setup}
+                onChange={(e) => setSetup(e.target.value)}
+                placeholder="e.g. VWAP reclaim at PDH"
+                className="w-full bg-[#0a0b0f] border border-white/10 rounded-md px-3 py-2 text-sm text-neutral-100 placeholder:text-neutral-700 focus:border-emerald-500/50 focus:outline-none"
+              />
+            </Field>
+          </div>
+
+          {/* ===== Quality & review ===== */}
+          <div className="pt-2 mt-2 border-t border-white/5 space-y-4">
+            <div className="text-[10px] uppercase tracking-[0.18em] text-neutral-500">Quality &amp; review</div>
+
+            <Field label="Market type" hint="What was the market doing? Drives the by-market analytics (#8).">
+              <Select value={marketType} onChange={setMarketType} options={MARKET_TYPES} placeholder="Select market type" />
+            </Field>
+
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Setup present?">
+                <SegYesNo value={setupPresent} onChange={setSetupPresent} />
+              </Field>
+              <Field label="Trigger present?">
+                <SegYesNo value={triggerPresent} onChange={setTriggerPresent} />
+              </Field>
+            </div>
+
+            <Field label="Rules followed?" hint="Valid = you followed your playbook. Invalid = you didn't. Drives the valid/invalid audit (#10).">
+              <SegYesNo value={rulesFollowed} onChange={setRulesFollowed} yesLabel="Valid" noLabel="Invalid" />
+            </Field>
+
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Execution quality">
+                <Select value={executionQuality} onChange={setExecutionQuality} options={EXECUTION_QUALITY} placeholder="—" />
+              </Field>
+              <Field label="Mistake type">
+                <Select value={mistakeType} onChange={setMistakeType} options={MISTAKE_TYPES} placeholder="None" />
               </Field>
             </div>
 
             {rulesFollowed === 'no' && (
-              <div className="mt-4">
-                <Field label="Which rules broken?" hint="Be specific. 'Oversized', 'no setup', 'revenge', 'moved stop', etc.">
-                  <textarea
-                    value={ruleBreaks}
-                    onChange={(e) => setRuleBreaks(e.target.value)}
-                    rows={2}
-                    placeholder="What did you actually do wrong?"
-                    className="w-full bg-[#0a0b0f] border border-rose-500/20 rounded-md px-3 py-2 text-sm text-neutral-100 placeholder:text-neutral-700 focus:border-rose-500/50 focus:outline-none resize-none"
-                  />
-                </Field>
-              </div>
+              <Field label="Which rules broken?" hint="Be specific. 'Oversized', 'no setup', 'revenge', 'moved stop', etc.">
+                <textarea
+                  value={ruleBreaks}
+                  onChange={(e) => setRuleBreaks(e.target.value)}
+                  rows={2}
+                  placeholder="What did you actually do wrong?"
+                  className="w-full bg-[#0a0b0f] border border-rose-500/20 rounded-md px-3 py-2 text-sm text-neutral-100 placeholder:text-neutral-700 focus:border-rose-500/50 focus:outline-none resize-none"
+                />
+              </Field>
             )}
 
             {Number(pnl) < 0 && (
-              <div className="mt-4">
-                <Field label="Loss explanation" hint="Why did this trade lose? Was it a valid loss or a mistake?">
-                  <textarea
-                    value={lossExplanation}
-                    onChange={(e) => setLossExplanation(e.target.value)}
-                    rows={2}
-                    placeholder="Stop was hit cleanly / I exited early in fear / setup invalidated / etc."
-                    className="w-full bg-[#0a0b0f] border border-white/10 rounded-md px-3 py-2 text-sm text-neutral-100 placeholder:text-neutral-700 focus:border-emerald-500/50 focus:outline-none resize-none"
-                  />
-                </Field>
-              </div>
+              <Field label="Loss explanation" hint="Why did this trade lose? Was it a valid loss or a mistake?">
+                <textarea
+                  value={lossExplanation}
+                  onChange={(e) => setLossExplanation(e.target.value)}
+                  rows={2}
+                  placeholder="Stop was hit cleanly / I exited early in fear / setup invalidated / etc."
+                  className="w-full bg-[#0a0b0f] border border-white/10 rounded-md px-3 py-2 text-sm text-neutral-100 placeholder:text-neutral-700 focus:border-emerald-500/50 focus:outline-none resize-none"
+                />
+              </Field>
             )}
+
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={isEval}
+                onChange={(e) => setIsEval(e.target.checked)}
+                className="w-4 h-4 rounded border-white/20 bg-[#0a0b0f] accent-emerald-500"
+              />
+              <span className="text-xs text-neutral-300">Eval / Combine trade (prop account)</span>
+            </label>
           </div>
-          {/* ===== /Review ===== */}
+          {/* ===== /Quality ===== */}
 
 
           <Field label="Notes">
+            <div className="flex items-center justify-end mb-1.5 -mt-1">
+              <button
+                type="button"
+                onClick={applySuggestions}
+                className="inline-flex items-center gap-1 text-[11px] text-emerald-300 hover:text-emerald-200 px-2 py-1 rounded-md border border-emerald-500/20 bg-emerald-500/[0.05]"
+              >
+                <Sparkles size={12} /> Suggest labels from notes
+              </button>
+            </div>
             <textarea
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
@@ -1204,6 +1420,7 @@ function TradeForm({ initial, defaultDate, onSubmit, onCancel }) {
               placeholder="What worked, what didn't, lessons…"
               className="w-full bg-[#0a0b0f] border border-white/10 rounded-md px-3 py-2 text-sm text-neutral-100 placeholder:text-neutral-700 focus:border-emerald-500/50 focus:outline-none resize-none"
             />
+            {suggestMsg && <div className="text-[11px] text-emerald-400/80 mt-1.5">{suggestMsg}</div>}
           </Field>
 
           {error && (
@@ -1243,6 +1460,45 @@ function Field({ label, hint, children }) {
       {children}
       {hint && <div className="text-[10px] text-neutral-600 mt-1">{hint}</div>}
     </label>
+  );
+}
+
+// Native dropdown styled to match the dark form. Keeps trade data clean (#7).
+function Select({ value, onChange, options, placeholder }) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="w-full bg-[#0a0b0f] border border-white/10 rounded-md px-3 py-2 text-sm text-neutral-100 focus:border-emerald-500/50 focus:outline-none appearance-none"
+    >
+      <option value="">{placeholder || '—'}</option>
+      {options.map((o) => (
+        <option key={o.value} value={o.value}>{o.label}</option>
+      ))}
+    </select>
+  );
+}
+
+// Yes / No / — tri-state segmented control.
+function SegYesNo({ value, onChange, yesLabel = 'Yes', noLabel = 'No' }) {
+  const cell = (v, label, on) => (
+    <button
+      type="button"
+      onClick={() => onChange(value === v ? '' : v)}
+      className={[
+        'py-1.5 text-xs font-semibold rounded transition-colors',
+        value === v ? on : 'text-neutral-500 hover:text-neutral-300',
+      ].join(' ')}
+    >
+      {label}
+    </button>
+  );
+  return (
+    <div className="grid grid-cols-3 gap-1 bg-[#0a0b0f] border border-white/10 rounded-md p-1">
+      {cell('yes', yesLabel, 'bg-emerald-500/15 text-emerald-400')}
+      {cell('no', noLabel, 'bg-rose-500/15 text-rose-400')}
+      {cell('', '—', 'bg-white/10 text-neutral-200')}
+    </div>
   );
 }
 
